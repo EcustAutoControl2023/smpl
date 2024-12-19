@@ -76,8 +76,8 @@ class PenSimEnvGym(PenSimEnv, smplEnvBase):
         if self.observation_name is None:
             self.observation_name = [f'o_{i}' for i in range(self.observation_dim)]
         if self.action_name is None:
-            self.action_name = ["Discharge rate", ",Sugar feed rate", "Soil bean feed rate", "Aeration rate",
-                                "Back pressure", "Water injection/dilution"]  # discharge, Fs, Foil, Fg, pressure, Fw
+            self.action_name = ["Discharge rate", "Sugar feed rate", "Soil bean feed rate", "Aeration rate",
+                                "Back pressure", "Water injection dilution"]  # discharge, Fs, Foil, Fg, pressure, Fw
         self.initial_state_deviation_ratio = initial_state_deviation_ratio
         self.np_dtype = np_dtype
         self.max_steps = max_steps

@@ -163,6 +163,7 @@ class PenSimEnvGym(PenSimEnv, smplEnvBase):
         self.step_count = 0
         self.total_reward = 0
         self.done = False
+        super(PenSimEnvGym, self).__init__(self.recipe_combo, fast=True)
 
         observation_0s = self.sample_initial_state(
             random_seed_ref=random_seed_ref

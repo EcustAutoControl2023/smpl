@@ -179,6 +179,32 @@ class PenSimEnvGym(PenSimEnv, smplEnvBase):
             )
         return observation, {}
 
+    def observation_beyond_box(self, observation):
+        """check if the observation is beyond the box, which is what we don't want.
+
+        Args:
+            observation ([np.ndarray]): This is denormalized observation, as usual.
+
+        Returns:
+            [bool]: observation is beyond the box or not.
+        """
+        # TODO: check for how long?
+        observation = self.np_dtype(observation)
+
+        # check if the observation is beyond the box. print the out of box values.
+        for i, (obs, max_obs, min_obs) in enumerate(
+            zip(observation, self.max_observations, self.min_observations)
+        ):
+            if obs > max_obs or obs < min_obs:
+                print(
+                    f"observation {i} is beyond the box: {obs} > {max_obs} or {obs} < {min_obs}"
+                )
+        return (
+            (not self.observation_space.contains(observation))
+            or np.any(np.isnan(observation))
+            or np.any(np.isinf(observation))
+        )
+
     def step(self, action, normalize=None):
         if self.debug_mode:
             print("action:", action)
@@ -218,6 +244,8 @@ class PenSimEnvGym(PenSimEnv, smplEnvBase):
                     "terminal": False,
                 }
             reward = yield_per_run
+            if reward <= self.error_reward:
+                print("got error_reward:", reward)
             self.x = x
             observation = get_observation_data_reformed(x, self.step_count - 1)
         except Exception as e:

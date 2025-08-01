@@ -382,7 +382,7 @@ class smplEnvBase(Env):
             observation, _, _ = normalize_spaces(
                 observation, self.max_observations, self.min_observations
             )
-        return observation
+        return observation, {}
 
     def step(self, action, normalize=None):
         """
@@ -420,7 +420,7 @@ class smplEnvBase(Env):
         )
         info = {}
         info.update(done_info)
-        return observation, reward, done, info
+        return observation, reward, done, done, info
 
     def set_initial_states(self, initial_states, num_episodes):
         if initial_states is None:
@@ -518,11 +518,11 @@ class smplEnvBase(Env):
                 algo_actions = []
                 algo_rewards = []  # list, for this algorithm, reawards of this trajectory.
                 try:
-                    init_obs = self.reset(initial_state=initial_states[n_epi])
+                    init_obs, _ = self.reset(initial_state=initial_states[n_epi])
                 except (
                     TypeError
                 ):  # means env cant set with initial_state, like PenSimEnvGym
-                    init_obs = self.reset()
+                    init_obs, _ = self.reset()
                 # algo_observes.append(init_obs)
                 o = init_obs
                 done = False
@@ -531,13 +531,17 @@ class smplEnvBase(Env):
                         o, _, _ = normalize_spaces(
                             o, self.max_observations, self.min_observations
                         )
+                    # add batch dimension
+                    o = np.expand_dims(o, axis=0)  # shape (1, observation_dim)
                     a = algo.predict(o)
+                    # remove batch dimension
+                    a = np.squeeze(a, axis=0)  # shape (action_dim,)
                     if normalize:
                         a, _, _ = denormalize_spaces(
                             a, self.max_actions, self.min_actions
                         )
                     algo_actions.append(a)
-                    o, r, done, _ = self.step(a)
+                    o, r, done, _, _ = self.step(a)
                     algo_observes.append(o)
                     algo_rewards.append(r)
                 observations_list[n_algo].append(algo_observes)
@@ -618,6 +622,39 @@ class smplEnvBase(Env):
                     path_name = os.path.join(plot_dir, f"{n_epi}_reward.png")
                     plt.savefig(path_name)
                 plt.close()
+
+        # before convert the nested list to numpy array, make sure the data in o a r are aligned
+        def clean_lists(observations_list, actions_list, rewards_list, max_steps):
+            num_algorithms = len(observations_list)
+            num_episodes = len(observations_list[0])
+
+            # print(f"shape of observations_list: {len(observations_list)}")
+            # print(f"shape of actions_list: {len(actions_list)}")
+            # print(f"shape of rewards_list: {len(rewards_list[-1][-1])}")
+            #
+            for n_algo in range(num_algorithms):
+                # Filter out observations, actions, and rewards that are shorter than max_steps
+                observations_list[n_algo] = [
+                    obs for obs in observations_list[n_algo] if len(obs) == max_steps
+                ]
+                actions_list[n_algo] = [
+                    act for act in actions_list[n_algo] if len(act) == max_steps
+                ]
+                rewards_list[n_algo] = [
+                    rew for rew in rewards_list[n_algo] if len(rew) == max_steps
+                ]
+
+            # Convert lists to numpy arrays
+            observations_list = np.array(observations_list, dtype=object)
+            actions_list = np.array(actions_list, dtype=object)
+            rewards_list = np.array(rewards_list, dtype=object)
+
+            return observations_list, actions_list, rewards_list
+
+        # Clean the lists before converting to numpy arrays
+        observations_list, actions_list, rewards_list = clean_lists(
+            observations_list, actions_list, rewards_list, self.max_steps
+        )
 
         observations_list = np.array(observations_list)
         actions_list = np.array(actions_list)
@@ -740,7 +777,7 @@ class smplEnvBase(Env):
         dataset["timeouts"] = []
         dataset["predict_time_taken"] = []
         for n_epi in tqdm(range(num_episodes)):
-            o = self.reset(initial_state=initial_states[n_epi])
+            o, _ = self.reset(initial_state=initial_states[n_epi])
             r = 0.0
             done = False
             timeout = False
@@ -767,7 +804,7 @@ class smplEnvBase(Env):
                 dataset["timeouts"].append(timeout)
                 dataset["predict_time_taken"].append(time_taken)
 
-                o, r, done, info = self.step(a)
+                o, r, done, done, info = self.step(a)
                 timeout = info["timeout"]
         dataset["observations"] = np.array(dataset["observations"])
         dataset["actions"] = np.array(dataset["actions"])

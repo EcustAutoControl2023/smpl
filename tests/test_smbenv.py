@@ -1,5 +1,7 @@
 import importlib.util
 import sys
+
+import casadi as ca
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +9,8 @@ import numpy as np
 import pytest
 
 from smpl.envs.smbenv import SMBEnv, SMBModel
+from smpl.envs.smb_controller import SMBMPCController, _mpc_stage_cost
+from smpl.envs.smb_sysid import N4SIDSurrogate
 
 REF_SYS_PATH = (
     Path(__file__).resolve().parent.parent
@@ -102,3 +106,36 @@ def test_env_step_returns_cost_and_reward_alignment():
     assert not done
     assert "cost" in info
     assert np.isclose(reward, -info["cost"])
+
+
+def test_baseline_mpc_aligns_with_reference_controller():
+    ref_root = REF_SYS_PATH.parent.parent
+    ref_root_str = str(ref_root)
+    if ref_root_str not in sys.path:
+        sys.path.insert(0, ref_root_str)
+    from Controls import control_mpc
+
+    model = SMBModel(seed=0)
+    sysid = N4SIDSurrogate(model, x_dim=4)  # keep observation-sized for tight comparison
+
+    def stage_cost(x, u, for_casadi=False, observe_model=None):
+        obs_model = observe_model if observe_model is not None else sysid.observe_model
+        y = obs_model(x, u, for_casadi)
+        return _mpc_stage_cost(model.ref, y, u)
+
+    config = SimpleNamespace(
+        mpc_abstract_stage_cost=stage_cost,
+        mpc_abstract_terminal_cost=stage_cost,
+        mpc_abstract_stage_constraint=lambda x, u, for_casadi, observe_model: ca.SX([]),
+        mpc_abstract_terminal_constraint=lambda x, u, for_casadi, observe_model: ca.SX([]),
+        mpc_initial_control=lambda x: model.ss_u,
+        MPC_g_dim=0,
+        MPC_h_dim=0,
+        MPC_prediction_horizon=4,
+    )
+
+    ref_ctrl = control_mpc.MPC(sysid, config)
+    smpl_ctrl = SMBMPCController(sysid, prediction_horizon=config.MPC_prediction_horizon)
+
+    x0 = sysid.ini_x
+    np.testing.assert_allclose(smpl_ctrl.control(x0), ref_ctrl.control(x0), rtol=1e-8, atol=1e-10)

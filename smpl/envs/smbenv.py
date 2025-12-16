@@ -53,6 +53,7 @@ class SMBModel:
         self.u_dim = 4
         self.y_dim = 4
         self.p_dim = 2
+        self.r_dim = 2
 
         self.state_std = np.zeros(self.x_dim, dtype=self.np_dtype)
         self.measure_std = np.zeros(self.y_dim, dtype=self.np_dtype)
@@ -134,6 +135,10 @@ class SMBModel:
             self.ss_p.copy(),
             self.ref.copy(),
         )
+
+    # Compatibility helpers for reference utilities/controllers
+    def do_reset(self):
+        return self.reset()
 
     def step(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
         self.p_now, p_bdd = self._disturbance_generation(self.p_now)
@@ -224,6 +229,9 @@ class SMBModel:
         )
         return next_x
 
+    def go_step(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
+        return self.step(x, u)
+
     def observe(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
         u = self._total_inputs(u)
         y = np.zeros(self.y_dim, dtype=self.np_dtype)
@@ -250,6 +258,9 @@ class SMBModel:
         )
         return y
 
+    def get_observation(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
+        return self.observe(x, u)
+
     def cost(self, y: np.ndarray, u: np.ndarray) -> float:
         product = -1.0
         extract_purity_penalty = 0.03
@@ -262,14 +273,27 @@ class SMBModel:
         penalty_raffinate = raffinate_purity_penalty * (self.ref[1] - puri_r)
         return 0.002 + product * (u[2] - u[1]) + penalty_extract + penalty_raffinate
 
+    def get_cost(self, y: np.ndarray, u: np.ndarray, ref: np.ndarray) -> float:
+        # ref kept for signature parity; uses self.ref internally.
+        return self.cost(y, u)
+
     def mode(self, x: np.ndarray) -> int:
         return int(x[4 * self.column_num * self.grid_num] * 10)
+
+    def get_mode(self, x: np.ndarray) -> int:
+        return self.mode(x)
 
     def feed_concentration(self) -> np.ndarray:
         return self.p_now
 
+    def get_feed_concentration(self):
+        return self.feed_concentration()
+
     def tank_information(self) -> Tuple[np.ndarray, np.ndarray]:
         return self.extract_tank, self.raffinate_tank
+
+    def get_tank_information(self):
+        return self.tank_information()
 
     def _make_step_function(self):
         x_ca = ca.SX.sym("x", 4 * self.grid_num)

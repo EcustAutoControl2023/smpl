@@ -100,7 +100,7 @@ def test_env_step_returns_cost_and_reward_alignment():
     assert env.observation_space.contains(obs)
 
     action = np.zeros(env.action_space.shape, dtype=np.float64)
-    next_obs, reward, done, info = env.step(action)
+    next_obs, reward, done, done, info = env.step(action)
 
     assert env.observation_space.contains(next_obs)
     assert not done

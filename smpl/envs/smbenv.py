@@ -271,7 +271,7 @@ class SMBModel:
 
         penalty_extract = extract_purity_penalty * (self.ref[0] - puri_e)
         penalty_raffinate = raffinate_purity_penalty * (self.ref[1] - puri_r)
-        return 0.002 + product * (u[2] - u[1]) + penalty_extract + penalty_raffinate
+        return 0.0041 + product * (u[2] - u[1]) + penalty_extract + penalty_raffinate
 
     def get_cost(self, y: np.ndarray, u: np.ndarray, ref: np.ndarray) -> float:
         # ref kept for signature parity; uses self.ref internally.
@@ -486,7 +486,7 @@ class SMBEnv(smplEnvBase):
         self.done_calculator = self.done_calculator_standard
         self.reset()
 
-    def reset(self, *, seed=None, options=None):
+    def reset(self, *, seed=None, options=None, initial_state=None):
         if seed is not None:
             self.seed = seed
             self.model.seed = seed
@@ -496,11 +496,14 @@ class SMBEnv(smplEnvBase):
         self.done = False
         self.previous_state = x
         self.previous_action = u
-        self.previous_observation = y
         observation = y.copy()
+        if initial_state is not None:
+            # Accept provided observation as starting point; keep internal state at steady state.
+            observation = np.array(initial_state, dtype=self.np_dtype)
         if self.normalize:
             observation, _, _ = normalize_spaces(observation, self.max_observations, self.min_observations)
         observation = observation.astype(self.observation_space.dtype)
+        self.previous_observation = observation
         return observation, {}
 
     def step(self, action, normalize=None):
@@ -543,10 +546,12 @@ class SMBEnv(smplEnvBase):
             "feed_concentration": self.model.feed_concentration().copy(),
             "extract_tank": self.model.tank_information()[0].copy(),
             "raffinate_tank": self.model.tank_information()[1].copy(),
+            "timeout": done_info.get("timeout", False),
         }
+        info.update(done_info)
         observation = observation.astype(self.observation_space.dtype)
         reward = float(reward)
-        return observation, reward, done, info
+        return observation, reward, done, done, info
 
     def _reward_from_cost(self, previous_observation, action, current_observation, reward=None):
         if reward is None:

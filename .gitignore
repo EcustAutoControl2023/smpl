@@ -163,3 +163,5 @@ cython_debug/
 generated
 MUJOCO_LOG.TXT
 debug_data*
+
+Data/

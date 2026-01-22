@@ -279,13 +279,13 @@ class Plant:
         z = SX.sym('z', self.Nz)
 
         # create integrator
-        opts = {"tf": dt, "abstol": 1E-10}  # interval length
+        opts = {"abstol": 1E-10}
         # dictionary for the integrator
         dae = {'x': x, 'z': z, 'p': u,
                'ode': self.get_derivative(x, z, u),
                'alg': self.get_algebraic(x, z, u)}
         # create the dae integrator
-        self.F = integrator('F', 'idas', dae, opts)
+        self.F = integrator('F', 'idas', dae, 0, [dt], opts)
 
     # this calculates the environmental factor. all components are considered harmless except
     # water and atropine in product stream

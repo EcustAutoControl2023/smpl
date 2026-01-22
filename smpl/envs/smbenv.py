@@ -308,8 +308,7 @@ class SMBModel:
         xdot = self._column_dynamics(x_d, u_d, p_d)
         xdot = np.multiply(xdot, self.scale_grad_for_a_column)
         ode = {"x": x_ca, "p": up_ca, "ode": xdot}
-        options = {"t0": 0, "tf": self.time_interval}
-        return ca.integrator("Integrator", "cvodes", ode, options)
+        return ca.integrator("Integrator", "cvodes", ode, 0, [self.time_interval], {})
 
     def _column_dynamics(self, x, u, p):
         y, v = x, u

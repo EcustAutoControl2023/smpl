@@ -12,6 +12,8 @@ Environments
 
     reactorenv
 
+    cstrenv
+
     atropineenv
 
     pensimenv

@@ -45,6 +45,14 @@ smpl.envs.reactorenv module
    :undoc-members:
    :show-inheritance:
 
+smpl.envs.cstrenv module
+---------------------------------
+
+.. automodule:: smpl.envs.cstrenv
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 smpl.envs.utils module
 ----------------------------
 

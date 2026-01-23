@@ -84,6 +84,41 @@ def plot_offline_comparison(
     plt.close(fig)
 
 
+def plot_failure_rates(
+    series: List[Tuple[str, Path]],
+    out_path: Path,
+    hours: np.ndarray,
+):
+    fig, ax = plt.subplots(figsize=(10, 6))
+    updates = hours * 60
+
+    for label, path in series:
+        data = _load_costs(path)
+        if data.max() > 1:
+            data = np.clip(data, 0, 1)
+        mean = data.mean(axis=0)
+        ax.plot(hours, mean, marker="o", label=label)
+
+    ax.set_xlabel("Time (hour)")
+    ax.set_ylabel("Failure Rate")
+    ax.set_xlim(hours.min(), hours.max())
+    ax.set_ylim(0.0, 1.0)
+
+    secax = ax.secondary_xaxis(
+        "bottom",
+        functions=(lambda x: x * 60.0, lambda x: x / 60.0),
+    )
+    secax.set_xlabel("Number of Update [Below]")
+    secax.set_xticks(updates)
+    secax.set_xticklabels([f"{int(u)}" for u in updates])
+
+    ax.legend(loc="best")
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def plot_last_run(
     cost_path: Path,
     out_path: Path,
@@ -117,6 +152,8 @@ def main():
     parser.add_argument("--last-run", type=Path, default=None)
     parser.add_argument("--last-out", type=Path, default=Path("figures/cstr_last_run.png"))
     parser.add_argument("--last-label", type=str, default="CSTR MPC LSTM (last run)")
+    parser.add_argument("--failure-series", action="append", default=[], help="label,path")
+    parser.add_argument("--failure-out", type=Path, default=Path("figures/cstr_failures.png"))
     parser.add_argument("--hours", type=str, default=None, help="Comma-separated hours matching saved checkpoints")
     args = parser.parse_args()
 
@@ -127,6 +164,10 @@ def main():
     if args.series:
         series = _parse_series(args.series)
         plot_offline_comparison(series, args.out, hours, args.optimal)
+
+    if args.failure_series:
+        series = _parse_series(args.failure_series)
+        plot_failure_rates(series, args.failure_out, hours)
 
     if args.last_run is not None:
         plot_last_run(args.last_run, args.last_out, hours, args.last_label)

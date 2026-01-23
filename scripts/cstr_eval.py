@@ -68,7 +68,23 @@ def _run_episode(controller1, controller2, horizon: int, init_horizon: int):
     sysid = controller1.sysid
     x_est = np.zeros((horizon, sysid.x_est_dim), dtype=np.float64)
     cstr_estimator = estimator.ESTIMATOR(sysid=sysid, config=cfg)
+    safety_cfg = {
+        "runaway_temp_threshold": 115.0,
+        "runaway_temp_rate_threshold": 0.5,
+        "input_rate_threshold": np.array([3.0, 500.0], dtype=np.float64),
+    }
+    if hasattr(cfg, "runaway_temp_threshold"):
+        safety_cfg["runaway_temp_threshold"] = cfg.runaway_temp_threshold
+    if hasattr(cfg, "runaway_temp_rate_threshold"):
+        safety_cfg["runaway_temp_rate_threshold"] = cfg.runaway_temp_rate_threshold
+    if hasattr(cfg, "input_rate_threshold"):
+        safety_cfg["input_rate_threshold"] = cfg.input_rate_threshold
 
+    unsafe = False
+    unsafe_reason = None
+    terminal_step = horizon - 1
+    max_temp_rate = -np.inf
+    max_du = np.zeros(plant.u_dim, dtype=np.float64)
     for k in range(horizon - 1):
         if np.mod(np.floor(k / 60), 2) == 0:
             r[k, :] = plant.ref1
@@ -86,12 +102,45 @@ def _run_episode(controller1, controller2, horizon: int, init_horizon: int):
         x[k + 1, :] = plant.go_step(x[k, :], u[k, :])
         y[k + 1, :] = plant.get_observation(x[k + 1, :])
         x_est[k + 1, :] = cstr_estimator.estimate(x_est[k, :], u[k, :], y[k + 1, :])
+        if np.any(u[k, :] < plant.u_min) or np.any(u[k, :] > plant.u_max):
+            unsafe = True
+            unsafe_reason = "action_out_of_bounds"
+            terminal_step = k
+            break
+        if "input_rate_threshold" in safety_cfg and k > 0:
+            thr = np.array(safety_cfg["input_rate_threshold"], dtype=np.float64)
+            du = np.abs(u[k, :] - u[k - 1, :])
+            max_du = np.maximum(max_du, du)
+            if np.any(du > thr):
+                unsafe = True
+                unsafe_reason = "action_rate_exceeded"
+                terminal_step = k
+                break
+        if "runaway_temp_rate_threshold" in safety_cfg:
+            rate_thr = float(safety_cfg["runaway_temp_rate_threshold"])
+            temp_thr = float(safety_cfg.get("runaway_temp_threshold", -np.inf))
+            temp_rate = plant.reactor_temp_rate(x[k, :], u[k, :])
+            max_temp_rate = max(max_temp_rate, temp_rate)
+            if temp_rate > rate_thr and x[k, 2] >= temp_thr:
+                unsafe = True
+                unsafe_reason = "thermal_runaway"
+                terminal_step = k
+                break
 
     r[-1, :] = plant.ref1
     u[-1, :] = controller1.control(x_est[-1, :])
     c[-1, :] = plant.get_cost(y[-1, :], u[-1, :], r[-1, :])
     p[-1, :] = plant.get_feed_temperature()
-    return y, u, r, c
+    if unsafe:
+        y[terminal_step + 1 :] = np.nan
+        u[terminal_step + 1 :] = np.nan
+        r[terminal_step + 1 :] = np.nan
+        c[terminal_step + 1 :] = np.nan
+    debug_info = {
+        "max_temp_rate": max_temp_rate if max_temp_rate != -np.inf else None,
+        "max_du": max_du,
+    }
+    return y, u, r, c, unsafe, unsafe_reason, terminal_step, debug_info
 
 
 def _plot_series(series_results, horizon, out_path: Path):
@@ -102,6 +151,18 @@ def _plot_series(series_results, horizon, out_path: Path):
     ax1 = plt.subplot(221)
     for label, data in series_results:
         ax1.plot(x_time, data["y"][:, 0], label=label)
+        if data.get("unsafe"):
+            idx = data.get("terminal_step", horizon - 1)
+            ax1.plot(idx, data["y"][idx, 0], "x", color=ax1.lines[-1].get_color())
+        if data.get("max_temp_rate") is not None:
+            ax1.text(
+                0.02,
+                0.95,
+                f"max dT/dt={data['max_temp_rate']:.3f}",
+                transform=ax1.transAxes,
+                fontsize=8,
+                color=ax1.lines[-1].get_color(),
+            )
     ax1.plot(x_time, ref[:, 0], "--k", label="Reference")
     ax1.set_title("y1")
     ax1.set_xlabel("Time (Min)")
@@ -110,6 +171,9 @@ def _plot_series(series_results, horizon, out_path: Path):
     ax2 = plt.subplot(222)
     for label, data in series_results:
         ax2.plot(x_time, data["y"][:, 1], label=label)
+        if data.get("unsafe"):
+            idx = data.get("terminal_step", horizon - 1)
+            ax2.plot(idx, data["y"][idx, 1], "x", color=ax2.lines[-1].get_color())
     ax2.plot(x_time, ref[:, 1], "--k", label="Reference")
     ax2.set_title("y2")
     ax2.set_xlabel("Time (Min)")
@@ -118,6 +182,9 @@ def _plot_series(series_results, horizon, out_path: Path):
     ax3 = plt.subplot(223)
     for label, data in series_results:
         ax3.plot(x_time, data["u"][:, 0], label=label)
+        if data.get("unsafe"):
+            idx = data.get("terminal_step", horizon - 1)
+            ax3.plot(idx, data["u"][idx, 0], "x", color=ax3.lines[-1].get_color())
     ax3.set_title("u1")
     ax3.set_xlabel("Time (Min)")
     ax3.set_ylabel("Value")
@@ -125,6 +192,18 @@ def _plot_series(series_results, horizon, out_path: Path):
     ax4 = plt.subplot(224)
     for label, data in series_results:
         ax4.plot(x_time, data["u"][:, 1], label=label)
+        if data.get("unsafe"):
+            idx = data.get("terminal_step", horizon - 1)
+            ax4.plot(idx, data["u"][idx, 1], "x", color=ax4.lines[-1].get_color())
+        if data.get("max_du") is not None:
+            ax4.text(
+                0.02,
+                0.95 - 0.08 * len(ax4.texts),
+                f"max |du|={data['max_du'][0]:.2f},{data['max_du'][1]:.2f}",
+                transform=ax4.transAxes,
+                fontsize=8,
+                color=ax4.lines[-1].get_color(),
+            )
     ax4.set_title("u2")
     ax4.set_xlabel("Time (Min)")
     ax4.set_ylabel("Value")
@@ -178,8 +257,30 @@ def main():
     series_results = []
     for spec in series_specs:
         ctrl1, ctrl2 = _load_controllers(spec, config1, config2)
-        y, u, r, c = _run_episode(ctrl1, ctrl2, args.horizon, args.warmup)
-        series_results.append((spec.label, {"y": y, "u": u, "r": r, "c": c}))
+        y, u, r, c, unsafe, unsafe_reason, terminal_step, debug_info = _run_episode(
+            ctrl1, ctrl2, args.horizon, args.warmup
+        )
+        print(
+            f"{spec.label}: unsafe={unsafe} reason={unsafe_reason} "
+            f"terminal_step={terminal_step} max_dTdt={debug_info['max_temp_rate']} "
+            f"max_du={debug_info['max_du']}"
+        )
+        series_results.append(
+            (
+                spec.label,
+                {
+                    "y": y,
+                    "u": u,
+                    "r": r,
+                    "c": c,
+                    "unsafe": unsafe,
+                    "unsafe_reason": unsafe_reason,
+                    "terminal_step": terminal_step,
+                    "max_temp_rate": debug_info["max_temp_rate"],
+                    "max_du": debug_info["max_du"],
+                },
+            )
+        )
 
     _plot_series(series_results, args.horizon, args.out)
     print(f"Saved figure to {args.out}")

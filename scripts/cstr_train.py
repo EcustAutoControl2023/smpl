@@ -174,7 +174,16 @@ def online_learning(
     return cstr_sysid
 
 
-def run_test(config1, controller1, controller2, sysid, estimator, horizon=60 * 3, init_horizon=20):
+def run_test(
+    config1,
+    controller1,
+    controller2,
+    sysid,
+    estimator,
+    horizon=60 * 3,
+    init_horizon=20,
+    safety_cfg=None,
+):
     test_seed = config1.seed + 12345
     np.random.seed(test_seed)
     random.seed(test_seed)
@@ -190,6 +199,14 @@ def run_test(config1, controller1, controller2, sysid, estimator, horizon=60 * 3
 
     x_est = np.zeros((horizon, sysid.x_est_dim), dtype=np.float64)
 
+    unsafe = False
+    unsafe_reason = None
+    if safety_cfg is None:
+        safety_cfg = {}
+    runaway_temp_threshold = safety_cfg.get("runaway_temp_threshold", 115.0)
+    runaway_temp_rate_threshold = safety_cfg.get("runaway_temp_rate_threshold", 0.5)
+    input_rate_threshold = safety_cfg.get("input_rate_threshold", np.array([3.0, 500.0]))
+    input_rate_threshold = np.array(input_rate_threshold, dtype=np.float64)
     for k in range(horizon - 1):
         if np.mod(np.floor(k / 60), 2) == 0:
             r[k, :] = plant.ref1
@@ -207,12 +224,25 @@ def run_test(config1, controller1, controller2, sysid, estimator, horizon=60 * 3
         x[k + 1, :] = plant.go_step(x[k, :], u[k, :])
         y[k + 1, :] = plant.get_observation(x[k + 1, :])
         x_est[k + 1, :] = estimator.estimate(x_est[k, :], u[k, :], y[k + 1, :])
+        if np.any(u[k, :] < plant.u_min) or np.any(u[k, :] > plant.u_max):
+            unsafe = True
+            unsafe_reason = "action_out_of_bounds"
+            break
+        if np.any(np.abs(u[k, :] - u[k - 1, :]) > input_rate_threshold) and k > 0:
+            unsafe = True
+            unsafe_reason = "action_rate_exceeded"
+            break
+        temp_rate = plant.reactor_temp_rate(x[k, :], u[k, :])
+        if temp_rate > runaway_temp_rate_threshold and x[k, 2] >= runaway_temp_threshold:
+            unsafe = True
+            unsafe_reason = "thermal_runaway"
+            break
 
     r[-1, :] = plant.ref1
     u[-1, :] = controller1.control(x_est[-1, :])
     c[-1, :] = plant.get_cost(y[-1, :], u[-1, :], r[-1, :])
     p[-1, :] = plant.get_feed_temperature()
-    return float(np.sum(c))
+    return float(np.sum(c)), unsafe, unsafe_reason
 
 
 def main():
@@ -250,6 +280,8 @@ def main():
     online_costs = np.zeros((args.seeds, online_save_index.size), dtype=np.float64)
     offline_costs = np.zeros((args.seeds, offline_save_index.size), dtype=np.float64)
     sysid_errors = np.zeros((args.seeds, offline_save_index.size), dtype=np.float64)
+    online_failures = np.zeros((args.seeds, online_save_index.size), dtype=np.int64)
+    offline_failures = np.zeros((args.seeds, offline_save_index.size), dtype=np.int64)
 
     for seed in range(args.seeds):
         random.seed(seed)
@@ -307,9 +339,10 @@ def main():
                     ctrl2.load_controller(directory, file_offline + "-ctrl2-" + str(operated_time))
                     cstr_sysid = ctrl1.controller.sysid
                     cstr_estimator = estimator.ESTIMATOR(sysid=cstr_sysid, config=config1)
-                    offline_costs[seed, k] = run_test(
+                    offline_costs[seed, k], unsafe, _ = run_test(
                         config1, ctrl1.controller, ctrl2.controller, cstr_sysid, cstr_estimator
                     )
+                    offline_failures[seed, k] = int(unsafe)
 
         if args.online_hour > 0:
             cstr_sysid = online_learning(
@@ -335,13 +368,16 @@ def main():
                     ctrl2.load_controller(directory, file_online + "-ctrl2-" + str(operated_time))
                     cstr_sysid = ctrl1.controller.sysid
                     cstr_estimator = estimator.ESTIMATOR(sysid=cstr_sysid, config=config1)
-                    online_costs[seed, k] = run_test(
+                    online_costs[seed, k], unsafe, _ = run_test(
                         config1, ctrl1.controller, ctrl2.controller, cstr_sysid, cstr_estimator
                     )
+                    online_failures[seed, k] = int(unsafe)
 
         np.savetxt(fname=directory / "cstr_results_online_cost.txt", X=online_costs, fmt="%12.8f")
         np.savetxt(fname=directory / "cstr_results_offline_cost.txt", X=offline_costs, fmt="%12.8f")
         np.savetxt(fname=directory / "cstr_results_sysid_errors.txt", X=sysid_errors, fmt="%12.8f")
+        np.savetxt(fname=directory / "cstr_results_online_failures.txt", X=online_failures, fmt="%d")
+        np.savetxt(fname=directory / "cstr_results_offline_failures.txt", X=offline_failures, fmt="%d")
 
     elapsed = datetime.now() - total_computation_time
     print("Total computation time:", elapsed)

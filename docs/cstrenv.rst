@@ -13,11 +13,15 @@ The environment terminates with the error reward when any unsafe condition is de
 Thermal runaway
 ^^^^^^^^^^^^^^^
 
-- Triggered when the reactor temperature rate exceeds ``runaway_temp_rate_threshold``.
-- Optionally gated by a minimum reactor temperature ``runaway_temp_threshold``.
+- Triggered when ``T_next >= hard_temp_threshold``.
+- Triggered when the reactor temperature rate exceeds
+  ``runaway_temp_rate_threshold`` and reactor temperature is above
+  ``runaway_temp_threshold``.
+- Enabled/disabled by ``enable_thermal_safety``.
 
 Default values:
 
+- ``hard_temp_threshold = 130.0`` (deg)
 - ``runaway_temp_rate_threshold = 0.5`` (deg/step)
 - ``runaway_temp_threshold = 115.0`` (deg)
 
@@ -25,11 +29,7 @@ Control input envelope
 ^^^^^^^^^^^^^^^^^^^^^^
 
 - Triggered when action is out of bounds.
-- Triggered when per-step ``|delta u|`` exceeds ``input_rate_threshold``.
-
-Default values:
-
-- ``input_rate_threshold = [3.0, 500.0]`` for ``[u1, u2]``
+- Enabled/disabled by ``enable_action_bounds_safety``.
 
 All thresholds are configurable via ``CSTREnv`` constructor arguments and are
 returned in ``info["safety_thresholds"]`` on each step.

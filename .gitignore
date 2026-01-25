@@ -165,3 +165,5 @@ MUJOCO_LOG.TXT
 debug_data*
 
 Data/
+ref/
+AGENTS.md

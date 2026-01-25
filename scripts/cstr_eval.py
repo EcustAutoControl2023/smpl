@@ -71,20 +71,19 @@ def _run_episode(controller1, controller2, horizon: int, init_horizon: int):
     safety_cfg = {
         "runaway_temp_threshold": 115.0,
         "runaway_temp_rate_threshold": 0.5,
-        "input_rate_threshold": np.array([3.0, 500.0], dtype=np.float64),
+        "hard_temp_threshold": 130.0,
     }
     if hasattr(cfg, "runaway_temp_threshold"):
         safety_cfg["runaway_temp_threshold"] = cfg.runaway_temp_threshold
     if hasattr(cfg, "runaway_temp_rate_threshold"):
         safety_cfg["runaway_temp_rate_threshold"] = cfg.runaway_temp_rate_threshold
-    if hasattr(cfg, "input_rate_threshold"):
-        safety_cfg["input_rate_threshold"] = cfg.input_rate_threshold
+    if hasattr(cfg, "hard_temp_threshold"):
+        safety_cfg["hard_temp_threshold"] = cfg.hard_temp_threshold
 
     unsafe = False
     unsafe_reason = None
     terminal_step = horizon - 1
     max_temp_rate = -np.inf
-    max_du = np.zeros(plant.u_dim, dtype=np.float64)
     for k in range(horizon - 1):
         if np.mod(np.floor(k / 60), 2) == 0:
             r[k, :] = plant.ref1
@@ -97,35 +96,37 @@ def _run_episode(controller1, controller2, horizon: int, init_horizon: int):
             u[k, :] = controller1.control(x_est[k, :])
         else:
             u[k, :] = controller2.control(x_est[k, :])
-        c[k, :] = plant.get_cost(y[k, :], u[k, :], r[k, :])
-        p[k, :] = plant.get_feed_temperature()
-        x[k + 1, :] = plant.go_step(x[k, :], u[k, :])
-        y[k + 1, :] = plant.get_observation(x[k + 1, :])
-        x_est[k + 1, :] = cstr_estimator.estimate(x_est[k, :], u[k, :], y[k + 1, :])
         if np.any(u[k, :] < plant.u_min) or np.any(u[k, :] > plant.u_max):
             unsafe = True
             unsafe_reason = "action_out_of_bounds"
             terminal_step = k
             break
-        if "input_rate_threshold" in safety_cfg and k > 0:
-            thr = np.array(safety_cfg["input_rate_threshold"], dtype=np.float64)
-            du = np.abs(u[k, :] - u[k - 1, :])
-            max_du = np.maximum(max_du, du)
-            if np.any(du > thr):
-                unsafe = True
-                unsafe_reason = "action_rate_exceeded"
-                terminal_step = k
-                break
-        if "runaway_temp_rate_threshold" in safety_cfg:
-            rate_thr = float(safety_cfg["runaway_temp_rate_threshold"])
-            temp_thr = float(safety_cfg.get("runaway_temp_threshold", -np.inf))
-            temp_rate = plant.reactor_temp_rate(x[k, :], u[k, :])
-            max_temp_rate = max(max_temp_rate, temp_rate)
-            if temp_rate > rate_thr and x[k, 2] >= temp_thr:
-                unsafe = True
-                unsafe_reason = "thermal_runaway"
-                terminal_step = k
-                break
+        c[k, :] = plant.get_cost(y[k, :], u[k, :], r[k, :])
+        p[k, :] = plant.get_feed_temperature()
+        next_x, p_bdd = plant.step(x[k, :], u[k, :], return_p=True)
+        x[k + 1, :] = next_x
+        y[k + 1, :] = plant.get_observation(x[k + 1, :])
+        x_est[k + 1, :] = cstr_estimator.estimate(x_est[k, :], u[k, :], y[k + 1, :])
+
+        rate_thr = float(safety_cfg["runaway_temp_rate_threshold"])
+        temp_thr = float(safety_cfg.get("runaway_temp_threshold", -np.inf))
+        hard_thr = float(safety_cfg.get("hard_temp_threshold", np.inf))
+        dt = float(plant.time_interval)
+        dT_avg = (next_x[2] - x[k, 2]) / dt
+        dT_inst = plant.reactor_temp_rate(x[k, :], u[k, :], p=p_bdd)
+        max_temp_rate = max(max_temp_rate, max(dT_avg, dT_inst))
+        T_prev = float(x[k, 2])
+        T_next = float(next_x[2])
+        if T_next >= hard_thr:
+            unsafe = True
+            unsafe_reason = "thermal_runaway"
+            terminal_step = k
+            break
+        if max(dT_avg, dT_inst) > rate_thr and max(T_prev, T_next) >= temp_thr:
+            unsafe = True
+            unsafe_reason = "thermal_runaway"
+            terminal_step = k
+            break
 
     r[-1, :] = plant.ref1
     u[-1, :] = controller1.control(x_est[-1, :])
@@ -138,7 +139,7 @@ def _run_episode(controller1, controller2, horizon: int, init_horizon: int):
         c[terminal_step + 1 :] = np.nan
     debug_info = {
         "max_temp_rate": max_temp_rate if max_temp_rate != -np.inf else None,
-        "max_du": max_du,
+        "max_du": None,
     }
     return y, u, r, c, unsafe, unsafe_reason, terminal_step, debug_info
 
@@ -262,8 +263,7 @@ def main():
         )
         print(
             f"{spec.label}: unsafe={unsafe} reason={unsafe_reason} "
-            f"terminal_step={terminal_step} max_dTdt={debug_info['max_temp_rate']} "
-            f"max_du={debug_info['max_du']}"
+            f"terminal_step={terminal_step} max_dTdt={debug_info['max_temp_rate']}"
         )
         series_results.append(
             (

@@ -16,12 +16,16 @@ import numpy as np
 from .utils import denormalize_spaces, normalize_spaces, smplEnvBase
 
 
-def _zero_mean_scale(var: np.ndarray, var_min: np.ndarray, var_max: np.ndarray) -> np.ndarray:
+def _zero_mean_scale(
+    var: np.ndarray, var_min: np.ndarray, var_max: np.ndarray
+) -> np.ndarray:
     """Scale var to [-1, 1] using min/max bounds."""
     return (2.0 * var - var_max - var_min) / (var_max - var_min)
 
 
-def _zero_mean_descale(var: np.ndarray, var_min: np.ndarray, var_max: np.ndarray) -> np.ndarray:
+def _zero_mean_descale(
+    var: np.ndarray, var_min: np.ndarray, var_max: np.ndarray
+) -> np.ndarray:
     """Invert `_zero_mean_scale`."""
     return (var_max - var_min) / 2.0 * var + (var_max + var_min) / 2.0
 
@@ -113,7 +117,9 @@ class CSTRModel:
         self.step_fcn = self._make_step_function()
         self.xdot_fcn = self._make_xdot_function()
 
-    def reset(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def reset(
+        self,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         np.random.seed(self.seed)
         self.p_now = self.np_dtype(105.0)
         return (
@@ -128,7 +134,7 @@ class CSTRModel:
     def do_reset(self):
         return self.reset()
 
-    def step(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
+    def step(self, x: np.ndarray, u: np.ndarray, *, return_p: bool = False):
         self.p_now, p_bdd = self._disturbance_generation(self.p_now)
         scaled_x = _zero_mean_scale(x, self.x_min, self.x_max)
         scaled_u = _zero_mean_scale(u, self.u_min, self.u_max)
@@ -138,6 +144,8 @@ class CSTRModel:
         result = self.step_fcn(x0=scaled_x, p=scaled_up)
         scaled_next_x = np.squeeze(np.array(result["xf"]))
         next_x = _zero_mean_descale(scaled_next_x, self.x_min, self.x_max)
+        if return_p:
+            return next_x, float(np.array(p_bdd).squeeze())
         return next_x
 
     # Compatibility helper for reference naming
@@ -152,7 +160,9 @@ class CSTRModel:
     def get_observation(self, x):
         return self.observe(x)
 
-    def cost(self, y: np.ndarray, u: np.ndarray, ref: np.ndarray | None = None) -> float:
+    def cost(
+        self, y: np.ndarray, u: np.ndarray, ref: np.ndarray | None = None
+    ) -> float:
         ref = self.ref1 if ref is None else ref
         y_weight = np.diag([1.0, 0.01 * 0.01])
         y_cost = (y - ref).T @ y_weight @ (y - ref)
@@ -163,7 +173,13 @@ class CSTRModel:
         return self.cost(y, u, ref)
 
     def get_steady_state(self):
-        return self.ss_x.copy(), self.ss_u.copy(), self.ss_y.copy(), self.ss_p.copy(), self.ref1.copy()
+        return (
+            self.ss_x.copy(),
+            self.ss_u.copy(),
+            self.ss_y.copy(),
+            self.ss_p.copy(),
+            self.ref1.copy(),
+        )
 
     def get_feed_temperature(self):
         return self.p_now
@@ -211,13 +227,19 @@ class CSTRModel:
         xdot = self._system_dynamics(x_ca, u_ca, p_ca)
         return ca.Function("xdot", [x_ca, u_ca, p_ca], [xdot])
 
-    def reactor_temp_rate(self, x: np.ndarray, u: np.ndarray, p: np.ndarray | None = None) -> float:
+    def reactor_temp_rate(
+        self, x: np.ndarray, u: np.ndarray, p: np.ndarray | None = None
+    ) -> float:
         p = self.p_now if p is None else p
         xdot = self.xdot_fcn(x, u, p)
         return float(np.array(xdot[2]).squeeze())
 
     def _disturbance_generation(self, p):
-        p_next = p - (p - self.ss_p) * self.time_interval + np.random.normal(0, self.para_std, 1)
+        p_next = (
+            p
+            - (p - self.ss_p) * self.time_interval
+            + np.random.normal(0, self.para_std, 1)
+        )
         p_bdd = np.clip(p_next, self.p_min, self.p_max)
         return p_next, p_bdd
 
@@ -226,11 +248,12 @@ class CSTREnv(smplEnvBase):
     """Gym-style CSTR environment following SMPL conventions.
 
     Safety detection (conservative defaults):
-        - thermal runaway: terminate if reactor temperature rate exceeds
-          `runaway_temp_rate_threshold` and (optionally) temperature exceeds
-          `runaway_temp_threshold`.
-        - control input envelope: terminate if action is out of bounds or
-          if per-step |delta u| exceeds `input_rate_threshold`.
+        - action bounds: terminate when action is outside `[u_min, u_max]`
+          if `enable_action_bounds_safety` is True.
+        - thermal runaway: terminate when `enable_thermal_safety` is True and:
+          (1) `T_next >= hard_temp_threshold`, or
+          (2) reactor temperature rate exceeds `runaway_temp_rate_threshold`
+              while reactor temperature is above `runaway_temp_threshold`.
     """
 
     def __init__(
@@ -244,18 +267,23 @@ class CSTREnv(smplEnvBase):
         seed: int = 0,
         runaway_temp_threshold: float | None = None,
         runaway_temp_rate_threshold: float | None = None,
-        input_rate_threshold: np.ndarray | float | None = None,
+        hard_temp_threshold: float | None = None,
+        enable_action_bounds_safety: bool = True,
+        enable_thermal_safety: bool = True,
     ):
         self.model = model if model is not None else CSTRModel(seed=seed)
         self.seed = seed
-        self.runaway_temp_threshold = 115.0 if runaway_temp_threshold is None else runaway_temp_threshold
+        self.runaway_temp_threshold = (
+            115.0 if runaway_temp_threshold is None else runaway_temp_threshold
+        )
         self.runaway_temp_rate_threshold = (
             0.5 if runaway_temp_rate_threshold is None else runaway_temp_rate_threshold
         )
-        if input_rate_threshold is None:
-            self.input_rate_threshold = np.array([3.0, 500.0], dtype=self.model.np_dtype)
-        else:
-            self.input_rate_threshold = np.array(input_rate_threshold, dtype=self.model.np_dtype)
+        self.hard_temp_threshold = (
+            130.0 if hard_temp_threshold is None else hard_temp_threshold
+        )
+        self.enable_action_bounds_safety = bool(enable_action_bounds_safety)
+        self.enable_thermal_safety = bool(enable_thermal_safety)
         super().__init__(
             dense_reward=dense_reward,
             normalize=normalize,
@@ -288,7 +316,9 @@ class CSTREnv(smplEnvBase):
         if initial_state is not None:
             observation = np.array(initial_state, dtype=self.np_dtype)
         if self.normalize:
-            observation, _, _ = normalize_spaces(observation, self.max_observations, self.min_observations)
+            observation, _, _ = normalize_spaces(
+                observation, self.max_observations, self.min_observations
+            )
         observation = observation.astype(self.observation_space.dtype)
         self.previous_observation = observation
         return observation, {}
@@ -300,22 +330,36 @@ class CSTREnv(smplEnvBase):
         normalize = self.normalize if normalize is None else normalize
         action = np.array(action, dtype=self.np_dtype)
         if normalize:
-            action, _, _ = denormalize_spaces(action, self.max_actions, self.min_actions)
+            action, _, _ = denormalize_spaces(
+                action, self.max_actions, self.min_actions
+            )
+
 
         unsafe_reason = None
-        if np.any(action < self.model.u_min) or np.any(action > self.model.u_max):
+        prev_state = self.previous_state
+        if self.enable_action_bounds_safety and (
+            np.any(action < self.model.u_min) or np.any(action > self.model.u_max)
+        ):
             unsafe_reason = "action_out_of_bounds"
-        if unsafe_reason is None and self.input_rate_threshold is not None:
-            du = np.abs(action - self.previous_action)
-            if np.any(du > self.input_rate_threshold):
-                unsafe_reason = "action_rate_exceeded"
-        if unsafe_reason is None and self.runaway_temp_rate_threshold is not None:
-            temp_rate = self.model.reactor_temp_rate(self.previous_state, action)
-            if temp_rate > self.runaway_temp_rate_threshold:
-                if self.runaway_temp_threshold is None or self.previous_state[2] >= self.runaway_temp_threshold:
-                    unsafe_reason = "thermal_runaway"
 
-        next_state = self.model.step(self.previous_state, action)
+        next_state, p_bdd = self.model.step(prev_state, action, return_p=True)
+
+        dt = float(self.model.time_interval)
+        dT_avg = (next_state[2] - prev_state[2]) / dt
+
+        # instantaneous rate under the SAME p_bdd used by the integrator
+        dT_inst = self.model.reactor_temp_rate(prev_state, action, p=p_bdd)
+
+        T_prev, T_next = float(prev_state[2]), float(next_state[2])
+
+        if self.enable_thermal_safety and unsafe_reason is None:
+            if T_next >= self.hard_temp_threshold:
+                unsafe_reason = "thermal_runaway"
+            elif (
+                max(dT_avg, dT_inst) > self.runaway_temp_rate_threshold
+                and max(T_prev, T_next) >= self.runaway_temp_threshold
+            ):
+                unsafe_reason = "thermal_runaway"
         observation = self.model.observe(next_state, action)
         cost = self.model.cost(observation, action)
 
@@ -323,7 +367,11 @@ class CSTREnv(smplEnvBase):
         if unsafe_reason is not None:
             reward = self.error_reward
             done = True
-            done_info = {"terminal": True, "timeout": False, "unsafe_reason": unsafe_reason}
+            done_info = {
+                "terminal": True,
+                "timeout": False,
+                "unsafe_reason": unsafe_reason,
+            }
 
         obs_for_check = observation.astype(self.observation_space.dtype)
         if normalize:
@@ -331,7 +379,9 @@ class CSTREnv(smplEnvBase):
                 obs_for_check, self.max_observations, self.min_observations
             )
             obs_for_check = obs_for_check.astype(self.observation_space.dtype)
-        reward = self.reward_function(self.previous_observation, action, obs_for_check, reward=reward)
+        reward = self.reward_function(
+            self.previous_observation, action, obs_for_check, reward=reward
+        )
         done, done_info = self.done_calculator(
             obs_for_check, self.step_count, reward, done=done, done_info=done_info
         )
@@ -349,18 +399,20 @@ class CSTREnv(smplEnvBase):
 
         observation = observation.clip(self.min_observations, self.max_observations)
         if normalize:
-            observation, _, _ = normalize_spaces(observation, self.max_observations, self.min_observations)
+            observation, _, _ = normalize_spaces(
+                observation, self.max_observations, self.min_observations
+            )
         info = {
             "cost": cost,
             "feed_temperature": float(self.model.get_feed_temperature()),
             "unsafe_reason": done_info.get("unsafe_reason"),
             "unsafe": bool(done_info.get("unsafe_reason")),
             "safety_thresholds": {
+                "hard_temp_threshold": self.hard_temp_threshold,
                 "runaway_temp_threshold": self.runaway_temp_threshold,
                 "runaway_temp_rate_threshold": self.runaway_temp_rate_threshold,
-                "input_rate_threshold": self.input_rate_threshold.copy()
-                if self.input_rate_threshold is not None
-                else None,
+                "enable_action_bounds_safety": self.enable_action_bounds_safety,
+                "enable_thermal_safety": self.enable_thermal_safety,
             },
         }
         info.update(done_info)
@@ -368,10 +420,14 @@ class CSTREnv(smplEnvBase):
         reward = float(reward)
         return observation, reward, done, done, info
 
-    def _reward_from_cost(self, previous_observation, action, current_observation, reward=None):
+    def _reward_from_cost(
+        self, previous_observation, action, current_observation, reward=None
+    ):
         if reward is None:
             return self.error_reward
-        if np.any(np.isnan(current_observation)) or np.any(np.isinf(current_observation)):
+        if np.any(np.isnan(current_observation)) or np.any(
+            np.isinf(current_observation)
+        ):
             return self.error_reward
         return reward
 

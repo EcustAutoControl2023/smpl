@@ -270,7 +270,9 @@ class CSTREnv(smplEnvBase):
         hard_temp_threshold: float | None = None,
         enable_action_bounds_safety: bool = True,
         enable_thermal_safety: bool = True,
-        reference_schedule_mode: Literal["fixed_ref1", "parity_hourly"] = "parity_hourly",
+        reference_schedule_mode: Literal[
+            "fixed_ref1", "fixed_ref2", "parity_hourly"
+        ] = "parity_hourly",
     ):
         self.model = model if model is not None else CSTRModel(seed=seed)
         self.seed = seed
@@ -285,7 +287,9 @@ class CSTREnv(smplEnvBase):
         )
         self.enable_action_bounds_safety = bool(enable_action_bounds_safety)
         self.enable_thermal_safety = bool(enable_thermal_safety)
-        self.reference_schedule_mode: Literal["fixed_ref1", "parity_hourly"] = (
+        self.reference_schedule_mode: Literal[
+            "fixed_ref1", "fixed_ref2", "parity_hourly"
+        ] = (
             "parity_hourly"
         )
         self.set_reference_mode(reference_schedule_mode)
@@ -311,9 +315,9 @@ class CSTREnv(smplEnvBase):
         self.reset()
 
     def set_reference_mode(
-        self, mode: Literal["fixed_ref1", "parity_hourly"] | str
+        self, mode: Literal["fixed_ref1", "fixed_ref2", "parity_hourly"] | str
     ) -> None:
-        allowed = {"fixed_ref1", "parity_hourly"}
+        allowed = {"fixed_ref1", "fixed_ref2", "parity_hourly"}
         if mode not in allowed:
             raise ValueError(
                 f"reference_schedule_mode must be one of {sorted(allowed)}, got {mode!r}."
@@ -323,6 +327,8 @@ class CSTREnv(smplEnvBase):
     def get_reference_for_step(self, step_index: int) -> np.ndarray:
         if self.reference_schedule_mode == "fixed_ref1":
             return np.asarray(self.model.ref1, dtype=self.model.np_dtype)
+        if self.reference_schedule_mode == "fixed_ref2":
+            return np.asarray(self.model.ref2, dtype=self.model.np_dtype)
         if (int(step_index) // 60) % 2 == 0:
             return np.asarray(self.model.ref1, dtype=self.model.np_dtype)
         return np.asarray(self.model.ref2, dtype=self.model.np_dtype)

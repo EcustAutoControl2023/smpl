@@ -8,7 +8,7 @@ and avoids any MATLAB dependency on the environment side.
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Literal, Tuple
 
 import casadi as ca
 import numpy as np
@@ -270,6 +270,7 @@ class CSTREnv(smplEnvBase):
         hard_temp_threshold: float | None = None,
         enable_action_bounds_safety: bool = True,
         enable_thermal_safety: bool = True,
+        reference_schedule_mode: Literal["fixed_ref1", "parity_hourly"] = "parity_hourly",
     ):
         self.model = model if model is not None else CSTRModel(seed=seed)
         self.seed = seed
@@ -284,6 +285,13 @@ class CSTREnv(smplEnvBase):
         )
         self.enable_action_bounds_safety = bool(enable_action_bounds_safety)
         self.enable_thermal_safety = bool(enable_thermal_safety)
+        self.reference_schedule_mode: Literal["fixed_ref1", "parity_hourly"] = (
+            "parity_hourly"
+        )
+        self.set_reference_mode(reference_schedule_mode)
+        self.current_reference = np.asarray(
+            self.model.ref1, dtype=self.model.np_dtype
+        ).copy()
         super().__init__(
             dense_reward=dense_reward,
             normalize=normalize,
@@ -302,6 +310,23 @@ class CSTREnv(smplEnvBase):
         self.done_calculator = self.done_calculator_standard
         self.reset()
 
+    def set_reference_mode(
+        self, mode: Literal["fixed_ref1", "parity_hourly"] | str
+    ) -> None:
+        allowed = {"fixed_ref1", "parity_hourly"}
+        if mode not in allowed:
+            raise ValueError(
+                f"reference_schedule_mode must be one of {sorted(allowed)}, got {mode!r}."
+            )
+        self.reference_schedule_mode = mode  # type: ignore[assignment]
+
+    def get_reference_for_step(self, step_index: int) -> np.ndarray:
+        if self.reference_schedule_mode == "fixed_ref1":
+            return np.asarray(self.model.ref1, dtype=self.model.np_dtype)
+        if (int(step_index) // 60) % 2 == 0:
+            return np.asarray(self.model.ref1, dtype=self.model.np_dtype)
+        return np.asarray(self.model.ref2, dtype=self.model.np_dtype)
+
     def reset(self, *, seed=None, options=None, initial_state=None):
         if seed is not None:
             self.seed = seed
@@ -310,6 +335,7 @@ class CSTREnv(smplEnvBase):
         self.step_count = 0
         self.total_reward = 0.0
         self.done = False
+        self.current_reference = self.get_reference_for_step(0).copy()
         self.previous_state = x
         self.previous_action = u
         observation = y.copy()
@@ -361,7 +387,9 @@ class CSTREnv(smplEnvBase):
             ):
                 unsafe_reason = "thermal_runaway"
         observation = self.model.observe(next_state, action)
-        cost = self.model.cost(observation, action)
+        reference = self.get_reference_for_step(self.step_count)
+        self.current_reference = reference.copy()
+        cost = self.model.cost(observation, action, ref=reference)
 
         reward = -cost
         if unsafe_reason is not None:
@@ -404,6 +432,9 @@ class CSTREnv(smplEnvBase):
             )
         info = {
             "cost": cost,
+            "ref_ca": float(reference[0]),
+            "ref_temp": float(reference[1]),
+            "reference_mode": self.reference_schedule_mode,
             "feed_temperature": float(self.model.get_feed_temperature()),
             "unsafe_reason": done_info.get("unsafe_reason"),
             "unsafe": bool(done_info.get("unsafe_reason")),

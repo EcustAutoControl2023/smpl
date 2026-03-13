@@ -37,6 +37,11 @@ class SMBModel:
         state_disturb: bool = False,
         measure_disturb: bool = False,
         para_disturb: bool = True,
+        pressure_outlet: float = 1.0,
+        pressure_fluid_viscosity: float = 1.0,
+        pressure_fluid_density: float = 1.0,
+        pressure_viscous_coeff: float = 0.05,
+        pressure_inertial_coeff: float = 0.01,
         np_dtype=np.float64,
     ):
         self.process_type = "continuous"
@@ -114,6 +119,11 @@ class SMBModel:
         self.time_interval = self.np_dtype(self.switch_time / 4 / self.time_grid_num)
         self.section1_flow_rate = 0.022
         self.section4_flow_rate = 0.010
+        self.pressure_outlet = self.np_dtype(pressure_outlet)
+        self.pressure_fluid_viscosity = self.np_dtype(pressure_fluid_viscosity)
+        self.pressure_fluid_density = self.np_dtype(pressure_fluid_density)
+        self.pressure_viscous_coeff = self.np_dtype(pressure_viscous_coeff)
+        self.pressure_inertial_coeff = self.np_dtype(pressure_inertial_coeff)
 
         self.step_fcn = self._make_step_function()
 
@@ -294,6 +304,37 @@ class SMBModel:
 
     def get_tank_information(self):
         return self.tank_information()
+
+    def role_index(self, x: np.ndarray) -> np.ndarray:
+        mode = int(x[4 * self.column_num * self.grid_num] * 10)
+        role_index = np.arange(self.column_num, dtype=int)
+        return np.concatenate((role_index[self.column_num - mode :], role_index[: self.column_num - mode]))
+
+    def compute_pressure_metrics(self, x: np.ndarray, u: np.ndarray) -> dict:
+        total_u = self._total_inputs(np.asarray(u, dtype=self.np_dtype))
+        role_index = self.role_index(np.asarray(x, dtype=self.np_dtype))
+        column_flow_rates = np.asarray(total_u[role_index], dtype=self.np_dtype)
+        superficial_velocity = np.asarray(column_flow_rates / self.area, dtype=self.np_dtype)
+        delta_p_columns = (
+            self.pressure_viscous_coeff * self.pressure_fluid_viscosity * superficial_velocity
+            + self.pressure_inertial_coeff
+            * self.pressure_fluid_density
+            * superficial_velocity
+            * np.abs(superficial_velocity)
+        ).astype(self.np_dtype)
+        pin_columns = (
+            self.pressure_outlet + np.cumsum(delta_p_columns[::-1], dtype=self.np_dtype)[::-1]
+        ).astype(self.np_dtype)
+        return {
+            "section_flow_rates": np.asarray(total_u, dtype=self.np_dtype),
+            "column_flow_rates": column_flow_rates,
+            "superficial_velocity": superficial_velocity,
+            "delta_p_columns": delta_p_columns,
+            "delta_p_max": self.np_dtype(np.max(delta_p_columns)),
+            "delta_p_sum": self.np_dtype(np.sum(delta_p_columns)),
+            "pin_columns": pin_columns,
+            "pin_max": self.np_dtype(np.max(pin_columns)),
+        }
 
     def _make_step_function(self):
         x_ca = ca.SX.sym("x", 4 * self.grid_num)
@@ -514,6 +555,7 @@ class SMBEnv(smplEnvBase):
         if normalize:
             action, _, _ = denormalize_spaces(action, self.max_actions, self.min_actions)
 
+        pressure_metrics = self.model.compute_pressure_metrics(self.previous_state, action)
         next_state = self.model.step(self.previous_state, action)
         observation = self.model.observe(next_state, action)
         cost = self.model.cost(observation, action)
@@ -545,6 +587,14 @@ class SMBEnv(smplEnvBase):
             "feed_concentration": self.model.feed_concentration().copy(),
             "extract_tank": self.model.tank_information()[0].copy(),
             "raffinate_tank": self.model.tank_information()[1].copy(),
+            "section_flow_rates": pressure_metrics["section_flow_rates"].copy(),
+            "column_flow_rates": pressure_metrics["column_flow_rates"].copy(),
+            "superficial_velocity": pressure_metrics["superficial_velocity"].copy(),
+            "delta_p_columns": pressure_metrics["delta_p_columns"].copy(),
+            "delta_p_max": float(pressure_metrics["delta_p_max"]),
+            "delta_p_sum": float(pressure_metrics["delta_p_sum"]),
+            "pin_columns": pressure_metrics["pin_columns"].copy(),
+            "pin_max": float(pressure_metrics["pin_max"]),
             "timeout": done_info.get("timeout", False),
         }
         info.update(done_info)

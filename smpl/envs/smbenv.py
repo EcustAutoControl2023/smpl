@@ -314,6 +314,7 @@ class SMBModel:
         total_u = self._total_inputs(np.asarray(u, dtype=self.np_dtype))
         role_index = self.role_index(np.asarray(x, dtype=self.np_dtype))
         column_flow_rates = np.asarray(total_u[role_index], dtype=self.np_dtype)
+        controlled_mask = np.isin(role_index, np.array([2, 3, 4, 5], dtype=int))
         superficial_velocity = np.asarray(column_flow_rates / self.area, dtype=self.np_dtype)
         delta_p_columns = (
             self.pressure_viscous_coeff * self.pressure_fluid_viscosity * superficial_velocity
@@ -325,15 +326,22 @@ class SMBModel:
         pin_columns = (
             self.pressure_outlet + np.cumsum(delta_p_columns[::-1], dtype=self.np_dtype)[::-1]
         ).astype(self.np_dtype)
+        controlled_delta_p_columns = np.asarray(delta_p_columns[controlled_mask], dtype=self.np_dtype)
+        controlled_pin_columns = np.asarray(pin_columns[controlled_mask], dtype=self.np_dtype)
         return {
             "section_flow_rates": np.asarray(total_u, dtype=self.np_dtype),
+            "column_roles": np.asarray(role_index, dtype=int),
+            "controlled_mask": np.asarray(controlled_mask, dtype=bool),
             "column_flow_rates": column_flow_rates,
             "superficial_velocity": superficial_velocity,
             "delta_p_columns": delta_p_columns,
-            "delta_p_max": self.np_dtype(np.max(delta_p_columns)),
-            "delta_p_sum": self.np_dtype(np.sum(delta_p_columns)),
+            "delta_p_max": self.np_dtype(np.max(controlled_delta_p_columns)),
+            "delta_p_sum": self.np_dtype(np.sum(controlled_delta_p_columns)),
+            "delta_p_max_global": self.np_dtype(np.max(delta_p_columns)),
+            "delta_p_sum_global": self.np_dtype(np.sum(delta_p_columns)),
             "pin_columns": pin_columns,
-            "pin_max": self.np_dtype(np.max(pin_columns)),
+            "pin_max": self.np_dtype(np.max(controlled_pin_columns)),
+            "pin_max_global": self.np_dtype(np.max(pin_columns)),
         }
 
     def _make_step_function(self):
@@ -588,13 +596,18 @@ class SMBEnv(smplEnvBase):
             "extract_tank": self.model.tank_information()[0].copy(),
             "raffinate_tank": self.model.tank_information()[1].copy(),
             "section_flow_rates": pressure_metrics["section_flow_rates"].copy(),
+            "column_roles": pressure_metrics["column_roles"].copy(),
+            "controlled_mask": pressure_metrics["controlled_mask"].copy(),
             "column_flow_rates": pressure_metrics["column_flow_rates"].copy(),
             "superficial_velocity": pressure_metrics["superficial_velocity"].copy(),
             "delta_p_columns": pressure_metrics["delta_p_columns"].copy(),
             "delta_p_max": float(pressure_metrics["delta_p_max"]),
             "delta_p_sum": float(pressure_metrics["delta_p_sum"]),
+            "delta_p_max_global": float(pressure_metrics["delta_p_max_global"]),
+            "delta_p_sum_global": float(pressure_metrics["delta_p_sum_global"]),
             "pin_columns": pressure_metrics["pin_columns"].copy(),
             "pin_max": float(pressure_metrics["pin_max"]),
+            "pin_max_global": float(pressure_metrics["pin_max_global"]),
             "timeout": done_info.get("timeout", False),
         }
         info.update(done_info)
